@@ -44,7 +44,7 @@ No third-party Python packages required. NmapShell uses only the standard librar
 ## Installation
 
 ```
-https://github.com/abhijithmotty/NMAPSH.git
+git clone https://github.com/abhijithmotty/nmapsh.git
 cd NMAPSH
 python3 main.py
 ```
