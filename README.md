@@ -44,8 +44,8 @@ No third-party Python packages required. NmapShell uses only the standard librar
 ## Installation
 
 ```
-git clone https://github.com/yourusername/nmapshell.git
-cd nmapshell
+https://github.com/abhijithmotty/NMAPSH.git
+cd NMAPSH
 python3 main.py
 ```
 
@@ -154,8 +154,8 @@ timing/sneaky             T1 - very slow, low noise
 | Option  | Required | Description                              |
 |---------|----------|------------------------------------------|
 | target  | yes      | IP, hostname, CIDR, or range             |
-| ports   | no       | Override ports  e.g. 80,443 or 1-1024   |
-| timing  | no       | Timing flag  e.g. -T4                   |
+| ports   | no       | Override ports  e.g. 80,443 or 1-1024    |
+| timing  | no       | Timing flag  e.g. -T4                    |
 | extra   | no       | Any additional raw nmap flags            |
 | outfile | no       | Base name for output files               |
 
