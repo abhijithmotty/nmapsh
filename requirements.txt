@@ -1,0 +1,8 @@
+# NmapShell - no third-party deps required!
+# Uses only Python standard library:
+#   - readline  (tab completion, history)
+#   - subprocess (running nmap)
+#   - pathlib, os, sys, datetime, textwrap, dataclasses
+
+# Optional: install these for coloured output on Windows
+# colorama>=0.4.6
