@@ -14,6 +14,11 @@
 
 ---
 
+## Demo
+
+https://github.com/user-attachments/assets/67724387-6c8c-4316-ba64-3c68be993909
+
+
 ## Overview
 
 NmapShell is a lightweight, interactive command-line framework for automating
