@@ -1,6 +1,6 @@
 """
-shell.py — NmapShell interactive console (Metasploit-style)
-Supports single-module and multi-module scans
+shell.py - NmapShell interactive console (Metasploit-style)
+v1.2 — number-based module selection + readline prompt width fix
 """
 
 import os
@@ -11,269 +11,244 @@ from typing import Optional
 from modules import MODULES, ScanModule, search_modules, get_module, list_categories
 from runner import ScanConfig, run_scan, OUTPUT_DIR
 
-# ── ANSI colours ────────────────────────────────────────────────
-R  = "\033[31m"
-G  = "\033[32m"
-Y  = "\033[33m"
-B  = "\033[34m"
-M  = "\033[35m"
-C  = "\033[36m"
-W  = "\033[37m"
-BLD= "\033[1m"
-DIM= "\033[2m"
-RST= "\033[0m"
+# ── colours for print() ─────────────────────────────────────────
+PR  = "\033[31m";  PG  = "\033[32m";  PY  = "\033[33m"
+PM  = "\033[35m";  PC  = "\033[36m"
+PBLD= "\033[1m";   PDIM= "\033[2m";   PRST= "\033[0m"
 
+# ── colours for input() prompt ──────────────────────────────────
+# Wrapping escape codes in \001..\002 tells readline to treat them
+# as zero-width.  Without this readline miscounts the prompt length
+# and the cursor drifts — causing the text-overlap on split screens.
+def _p(c: str) -> str:
+    return f"\001{c}\002"
 
-BANNER = f"""{R}{BLD}
+_R = _p("\033[31m"); _G = _p("\033[32m"); _Y = _p("\033[33m")
+_M = _p("\033[35m"); _C = _p("\033[36m"); _W = _p("\033[37m")
+_B = _p("\033[1m");  _D = _p("\033[2m");  _X = _p("\033[0m")
+
+# ────────────────────────────────────────────────────────────────
+
+BANNER = f"""{PR}{PBLD}
   ███╗   ██╗███╗   ███╗ █████╗ ██████╗ ███████╗██╗  ██╗
   ████╗  ██║████╗ ████║██╔══██╗██╔══██╗██╔════╝██║  ██║
   ██╔██╗ ██║██╔████╔██║███████║██████╔╝███████╗███████║
   ██║╚██╗██║██║╚██╔╝██║██╔══██║██╔═══╝ ╚════██║██╔══██║
   ██║ ╚████║██║ ╚═╝ ██║██║  ██║██║     ███████║██║  ██║
   ╚═╝  ╚═══╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝
-{RST}{Y}  Interactive Nmap Automation Framework{RST}
-  {DIM}Version 1.1  |  For authorized use only{RST}
+{PRST}{PY}  Interactive Nmap Automation Framework{PRST}
+  {PDIM}Version 1.2  |  For authorized use only{PRST}
 
-  Type {C}help{RST} to get started  |  {C}use multi{RST} to run multiple modules at once
+  Type {PC}help{PRST} to get started  |  {PC}use multi{PRST} to run multiple modules at once
+  After {PC}search{PRST}, load a result with {PC}use 0{PRST}, {PC}use 1{PRST}, etc.
 """
 
-# ═══════════════════════════════════════════════════════════════
-#  HELP STRINGS
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+#  HELP TEXT  (plain P* colours — safe for print())
+# ════════════════════════════════════════════════════════════════
 
 HELP_MAIN = f"""
-{BLD}{C}╔══════════════════════════════════════════════════════╗
-║              NmapShell  —  Command Reference         ║
-╚══════════════════════════════════════════════════════╝{RST}
+{PBLD}{PC}+------------------------------------------------------+
+|          NmapShell  -  Command Reference             |
++------------------------------------------------------+{PRST}
 
-{BLD}{C}HELP TOPICS{RST}  (type: help <topic>)
-  {G}help search{RST}      Keyword list for finding modules
-  {G}help set{RST}         All options explained with examples
-  {G}help modules{RST}     Full module list
-  {G}help multi{RST}       How to run multiple modules in one scan
-  {G}help workflow{RST}    Step-by-step example workflows
-  {G}help targets{RST}     IP / CIDR / range format guide
-  {G}help timing{RST}      Timing flags -T0 to -T5 explained
-  {G}help output{RST}      Output file formats (.nmap .xml .gnmap)
+{PBLD}{PC}HELP TOPICS{PRST}  (type: help <topic>)
+  {PG}help search{PRST}      Keyword list for finding modules
+  {PG}help set{PRST}         All options explained with examples
+  {PG}help modules{PRST}     Full module list
+  {PG}help multi{PRST}       How to run multiple modules in one scan
+  {PG}help workflow{PRST}    Step-by-step example workflows
+  {PG}help targets{PRST}     IP / CIDR / range format guide
+  {PG}help timing{PRST}      Timing flags -T0 to -T5 explained
+  {PG}help output{PRST}      Output file formats (.nmap .xml .gnmap)
 
-{BLD}{C}CORE COMMANDS{RST}
-  {G}search  <keyword>{RST}         Search modules by keyword
-  {G}use     <module/name>{RST}     Load a single module
-  {G}use     multi{RST}             Enter multi-module scan mode
-  {G}show    modules{RST}           List every module
-  {G}show    categories{RST}        List module categories
-  {G}show    options{RST}           Show options for loaded module
-  {G}info{RST}                      Full info + nmap args for loaded module
-  {G}set     <option> <value>{RST}  Set an option
-  {G}unset   <option>{RST}          Clear an option
-  {G}run{RST}                       Execute the scan
-  {G}results{RST}                   List saved output files
-  {G}back{RST}                      Unload current module / leave multi mode
-  {G}clear{RST}                     Clear the screen
-  {G}exit / quit{RST}               Exit NmapShell
+{PBLD}{PC}CORE COMMANDS{PRST}
+  {PG}search  <keyword>{PRST}         Search modules by keyword
+  {PG}use     <number>{PRST}          Load module by search result number
+  {PG}use     <module/name>{PRST}     Load a module by full name
+  {PG}use     multi{PRST}             Enter multi-module scan mode
+  {PG}show    modules{PRST}           List every module
+  {PG}show    categories{PRST}        List module categories
+  {PG}show    options{PRST}           Show current options
+  {PG}info{PRST}                      Full info on loaded module
+  {PG}set     <option> <value>{PRST}  Set an option
+  {PG}unset   <option>{PRST}          Clear an option
+  {PG}run{PRST}                       Execute the scan
+  {PG}results{PRST}                   List saved output files
+  {PG}back{PRST}                      Unload module / leave multi mode
+  {PG}clear{PRST}                     Clear the screen
+  {PG}exit / quit{PRST}               Exit NmapShell
 
-{BLD}{C}MULTI-MODULE COMMANDS{RST}  (only active inside 'use multi')
-  {G}add     <module/name>{RST}     Add a module to the scan queue
-  {G}remove  <module/name>{RST}     Remove a module from the queue
-  {G}list{RST}                      Show queued modules
-  {G}clear_queue{RST}               Remove all modules from queue
+{PBLD}{PC}MULTI-MODULE COMMANDS{PRST}  (only inside 'use multi')
+  {PG}add  <number or name>{PRST}     Add a module to the scan queue
+  {PG}remove  <module/name>{PRST}     Remove a module from the queue
+  {PG}list{PRST}                      Show queued modules
+  {PG}clear_queue{PRST}               Remove all modules from queue
 
-  {DIM}Tip: press TAB anywhere to auto-complete commands and module names{RST}
-"""
-
-HELP_MULTI = f"""
-{BLD}{C}MULTI-MODULE SCAN MODE{RST}
-  Run several scan types against the same target in one session.
-  Each module runs as a separate nmap command, results saved individually.
-
-{BLD}How to use:{RST}
-  nmapsh > {C}use multi{RST}
-  nmapsh(multi) > {C}add portscan/quick{RST}
-  nmapsh(multi) > {C}add scripts/http{RST}
-  nmapsh(multi) > {C}add scripts/ssh{RST}
-  nmapsh(multi) > {C}add scripts/ftp{RST}
-  nmapsh(multi) > {C}list{RST}               <- review the queue
-  nmapsh(multi) > {C}set target 192.168.1.1{RST}
-  nmapsh(multi) > {C}set timing -T4{RST}
-  nmapsh(multi) > {C}run{RST}                <- runs all modules in sequence
-
-{BLD}Managing the queue:{RST}
-  {G}add <module>{RST}          Add to queue (duplicates ignored)
-  {G}remove <module>{RST}       Remove one module from queue
-  {G}list{RST}                  Show what is queued with index numbers
-  {G}clear_queue{RST}           Wipe the whole queue
-  {G}back{RST}                  Leave multi mode (queue is cleared)
-
-{BLD}Good combinations:{RST}
-  {Y}Web server recon:{RST}
-    add portscan/quick  +  add scripts/http  +  add scripts/ssl
-
-  {Y}Windows / AD host:{RST}
-    add portscan/top1000  +  add scripts/smb  +  add scripts/dns
-
-  {Y}Full service fingerprint:{RST}
-    add portscan/full_tcp  +  add enum/service_version  +  add enum/os_detect
-
-  {Y}Common services:{RST}
-    add scripts/ftp  +  add scripts/ssh  +  add scripts/http  +  add scripts/smb
-
-{BLD}Notes:{RST}
-  Options (target, timing, extra, ports) are shared across all modules.
-  Each module saves its own output file in nmap_results/.
-  Modules needing root are flagged -- run with sudo if needed.
-  Use 'results' after running to see all saved files.
+  {PDIM}Tip: TAB auto-completes commands and module names{PRST}
 """
 
 HELP_SEARCH = f"""
-{BLD}{C}SEARCH COMMAND{RST}
-  Usage: {G}search <keyword>{RST}
+{PBLD}{PC}SEARCH COMMAND{PRST}
+  Usage: {PG}search <keyword>{PRST}
+  After searching: {PG}use 0{PRST}, {PG}use 1{PRST}, {PG}use 2{PRST} ... to load a result directly
 
-{BLD}By service / protocol:{RST}
-  {Y}http{RST}       HTTP enumeration (titles, methods, dirs)
-  {Y}smb{RST}        SMB/Windows shares, users, security
-  {Y}ftp{RST}        FTP anon login, banner, bounce check
-  {Y}ssh{RST}        SSH host-key, auth methods, algorithms
-  {Y}ssl{RST}        SSL/TLS cert, ciphers, heartbleed
-  {Y}dns{RST}        DNS zone transfer, brute, service info
-  {Y}snmp{RST}       SNMP community string enum
-  {Y}vuln{RST}       Vulnerability detection scripts
+{PBLD}By service / protocol:{PRST}
+  {PY}http{PRST}       HTTP enumeration (titles, methods, dirs)
+  {PY}smb{PRST}        SMB/Windows shares, users, security
+  {PY}ftp{PRST}        FTP anon login, banner, bounce check
+  {PY}ssh{PRST}        SSH host-key, auth methods, algorithms
+  {PY}ssl{PRST}        SSL/TLS cert, ciphers, heartbleed
+  {PY}dns{PRST}        DNS zone transfer, brute, service info
+  {PY}snmp{PRST}       SNMP community string enum
+  {PY}vuln{PRST}       Vulnerability detection scripts
 
-{BLD}By scan type:{RST}
-  {Y}port{RST}       All port scan modules
-  {Y}udp{RST}        UDP scanning
-  {Y}syn{RST}        SYN stealth scan (requires root)
-  {Y}connect{RST}    TCP connect scan (no root needed)
-  {Y}full{RST}       All 65535 ports
-  {Y}quick{RST}      Fast top-100 ports
+{PBLD}By scan type:{PRST}
+  {PY}port{PRST}       All port scan modules
+  {PY}udp{PRST}        UDP scanning
+  {PY}syn{PRST}        SYN stealth scan (requires root)
+  {PY}connect{PRST}    TCP connect scan (no root needed)
+  {PY}full{PRST}       All 65535 ports
+  {PY}quick{PRST}      Fast top-100 ports
 
-{BLD}By goal:{RST}
-  {Y}discovery{RST}  Find live hosts on a network
-  {Y}version{RST}    Detect service/software versions
-  {Y}os{RST}         Operating system fingerprinting
-  {Y}script{RST}     NSE script-based scans
-  {Y}aggressive{RST} Full -A scan (OS + version + scripts)
-  {Y}banner{RST}     Grab service banners
+{PBLD}By goal:{PRST}
+  {PY}discovery{PRST}  Find live hosts on a network
+  {PY}version{PRST}    Detect service/software versions
+  {PY}os{PRST}         Operating system fingerprinting
+  {PY}aggressive{PRST} Full -A scan (OS + version + scripts)
+  {PY}banner{PRST}     Grab service banners
 
-{BLD}By category name:{RST}
-  {Y}portscan  discovery  enum  scripts  timing{RST}
+{PBLD}By category:{PRST}
+  {PY}portscan  discovery  enum  scripts  timing{PRST}
 """
 
 HELP_SET = f"""
-{BLD}{C}SET COMMAND -- Options Reference{RST}
-  Usage: {G}set <option> <value>{RST}
-  Usage: {G}unset <option>{RST}
+{PBLD}{PC}SET COMMAND{PRST}
+  Usage: {PG}set <option> <value>{PRST}
+  Usage: {PG}unset <option>{PRST}
 
-{BLD}{C}OPTIONS{RST}
+  {PY}target{PRST}   {PR}(required){PRST}
+      {PC}set target 192.168.1.1{PRST}
+      {PC}set target 192.168.1.0/24{PRST}
+      {PC}set target scanme.nmap.org{PRST}
 
-  {Y}target{RST}   {R}(required){RST}
-    Examples:
-      {C}set target 192.168.1.1{RST}
-      {C}set target 192.168.1.0/24{RST}
-      {C}set target scanme.nmap.org{RST}
+  {PY}ports{PRST}    {PDIM}(optional - overrides module default){PRST}
+      {PC}set ports 80,443{PRST}
+      {PC}set ports 1-1024{PRST}
+      {PC}set ports -{PRST}          <- all 65535 ports
 
-  {Y}ports{RST}    {DIM}(optional -- overrides module default){RST}
-    Examples:
-      {C}set ports 80,443{RST}
-      {C}set ports 1-1024{RST}
-      {C}set ports -{RST}          <- all 65535 ports
+  {PY}timing{PRST}   {PDIM}(optional){PRST}
+      {PC}set timing -T1{PRST}       <- slow / sneaky
+      {PC}set timing -T4{PRST}       <- fast / recommended
 
-  {Y}timing{RST}   {DIM}(optional){RST}
-    Examples:
-      {C}set timing -T1{RST}       <- slow / sneaky
-      {C}set timing -T4{RST}       <- fast / recommended
+  {PY}extra{PRST}    {PDIM}(optional - any raw nmap flags){PRST}
+      {PC}set extra --open{PRST}
+      {PC}set extra -v --open{PRST}
 
-  {Y}extra{RST}    {DIM}(optional -- any raw nmap flags){RST}
-    Examples:
-      {C}set extra --open{RST}
-      {C}set extra -v --open{RST}
-      {C}set extra --script-args user=admin{RST}
-
-  {Y}outfile{RST}  {DIM}(optional -- base filename, no extension){RST}
-    Example:
-      {C}set outfile my_scan{RST}
+  {PY}outfile{PRST}  {PDIM}(optional - base filename, no extension){PRST}
+      {PC}set outfile my_scan{PRST}
       -> saves: my_scan.nmap / my_scan.xml / my_scan.gnmap
-    In multi mode, module name is appended automatically.
 """
 
 HELP_TARGETS = f"""
-{BLD}{C}TARGET FORMATS{RST}
-  {C}set target 192.168.1.1{RST}              Single IP
-  {C}set target 192.168.1.0/24{RST}           CIDR subnet (256 hosts)
-  {C}set target 10.0.0.0/16{RST}              Larger subnet
-  {C}set target 192.168.1.1-50{RST}           IP range (.1 to .50)
-  {C}set target 192.168.1.1 192.168.1.5{RST}  Multiple IPs
-  {C}set target scanme.nmap.org{RST}           Hostname
-  {C}set target example.com{RST}               Domain
+{PBLD}{PC}TARGET FORMATS{PRST}
+  {PC}set target 192.168.1.1{PRST}              Single IP
+  {PC}set target 192.168.1.0/24{PRST}           CIDR subnet (256 hosts)
+  {PC}set target 10.0.0.0/16{PRST}              Larger subnet
+  {PC}set target 192.168.1.1-50{PRST}           IP range (.1 to .50)
+  {PC}set target 192.168.1.1 192.168.1.5{PRST}  Multiple IPs
+  {PC}set target scanme.nmap.org{PRST}           Hostname
 """
 
 HELP_TIMING = f"""
-{BLD}{C}TIMING FLAGS  (-T0 to -T5){RST}
-  Use with:  {G}set timing -T<n>{RST}
+{PBLD}{PC}TIMING FLAGS  (-T0 to -T5){PRST}
+  Use with:  {PG}set timing -T<n>{PRST}
 
-  {Y}-T0{RST}  Paranoid    One probe every 5 min. Maximum stealth.
-  {Y}-T1{RST}  Sneaky      Very slow. Reduces IDS detection chance.
-  {Y}-T2{RST}  Polite      Slower than default. Saves bandwidth.
-  {Y}-T3{RST}  Normal      Default nmap timing. Balanced.
-  {Y}-T4{RST}  Aggressive  Fast. Good for local networks. {G}<- Recommended{RST}
-  {Y}-T5{RST}  Insane      Maximum speed. May miss results.
+  {PY}-T0{PRST}  Paranoid    One probe every 5 min. Maximum stealth.
+  {PY}-T1{PRST}  Sneaky      Very slow. Low IDS detection.
+  {PY}-T2{PRST}  Polite      Slower than default. Saves bandwidth.
+  {PY}-T3{PRST}  Normal      Default nmap timing.
+  {PY}-T4{PRST}  Aggressive  Fast. Good for local networks. {PG}<- Recommended{PRST}
+  {PY}-T5{PRST}  Insane      Maximum speed. May miss results.
 """
 
 HELP_OUTPUT = f"""
-{BLD}{C}OUTPUT FILES  ->  saved in {Y}nmap_results/{RST}
+{PBLD}{PC}OUTPUT FILES  ->  saved in {PY}nmap_results/{PRST}
 
-  {G}.nmap{RST}    Human-readable (same as terminal output)
-  {G}.xml{RST}     Machine-parseable XML
-  {G}.gnmap{RST}   Grepable format
+  {PG}.nmap{PRST}    Human-readable output
+  {PG}.xml{PRST}     Machine-parseable XML
+  {PG}.gnmap{PRST}   Grepable format
 
-  Files are named:  {C}<module>_<target>_<timestamp>{RST}
-  View them:        {G}results{RST}
+  Files are named:  {PC}<module>_<target>_<timestamp>{PRST}
+  View them with:   {PG}results{PRST}
 
-  Grep open ports (outside NmapShell):
-    {DIM}grep "open" nmap_results/*.gnmap{RST}
-    {DIM}grep "80/open" nmap_results/*.gnmap{RST}
+  Grep example (in bash):
+    {PDIM}grep "80/open" nmap_results/*.gnmap{PRST}
+"""
+
+HELP_MULTI = f"""
+{PBLD}{PC}MULTI-MODULE SCAN MODE{PRST}
+  Run several modules against the same target in sequence.
+
+{PBLD}Workflow:{PRST}
+  {PC}use multi{PRST}
+  {PC}add portscan/quick{PRST}          <- by name
+  {PC}search http{PRST}
+  {PC}add 0{PRST}                       <- by search result number
+  {PC}add scripts/ssh{PRST}
+  {PC}list{PRST}                        <- review queue
+  {PC}set target 192.168.1.1{PRST}
+  {PC}run{PRST}                         <- fires all in sequence
+
+{PBLD}Queue commands:{PRST}
+  {PG}add <name or number>{PRST}    Add module (duplicates ignored)
+  {PG}remove <name>{PRST}           Remove one module
+  {PG}list{PRST}                    View queue
+  {PG}clear_queue{PRST}             Wipe queue
+  {PG}back{PRST}                    Leave multi mode
+
+{PBLD}Useful combinations:{PRST}
+  Web server:   portscan/quick + scripts/http + scripts/ssl
+  Windows host: portscan/top1000 + scripts/smb + scripts/dns
+  Services:     scripts/ftp + scripts/ssh + scripts/http + scripts/smb
 """
 
 HELP_WORKFLOW = f"""
-{BLD}{C}EXAMPLE WORKFLOWS{RST}
+{PBLD}{PC}EXAMPLE WORKFLOWS{PRST}
 
-{BLD}1. Quick port scan{RST}
-   {C}use portscan/quick{RST}
-   {C}set target 192.168.1.1{RST}
-   {C}run{RST}
+{PBLD}1. Search and load by number (fastest){PRST}
+   {PC}search port{PRST}
+   {PC}use 0{PRST}
+   {PC}set target 192.168.1.1{PRST}
+   {PC}run{PRST}
 
-{BLD}2. Full web server recon (multi){RST}
-   {C}use multi{RST}
-   {C}add portscan/quick{RST}
-   {C}add scripts/http{RST}
-   {C}add scripts/ssl{RST}
-   {C}set target 192.168.1.50{RST}
-   {C}set timing -T4{RST}
-   {C}run{RST}
+{PBLD}2. Web server recon (multi){PRST}
+   {PC}use multi{PRST}
+   {PC}add portscan/quick{PRST}
+   {PC}add scripts/http{PRST}
+   {PC}add scripts/ssl{PRST}
+   {PC}set target 192.168.1.50{PRST}
+   {PC}set timing -T4{PRST}
+   {PC}run{PRST}
 
-{BLD}3. Windows host (multi){RST}
-   {C}use multi{RST}
-   {C}add portscan/top1000{RST}
-   {C}add scripts/smb{RST}
-   {C}add scripts/dns{RST}
-   {C}set target 192.168.1.10{RST}
-   {C}run{RST}
+{PBLD}3. Windows / SMB host (multi){PRST}
+   {PC}use multi{PRST}
+   {PC}add portscan/top1000{PRST}
+   {PC}add scripts/smb{PRST}
+   {PC}add scripts/dns{PRST}
+   {PC}set target 192.168.1.10{PRST}
+   {PC}run{PRST}
 
-{BLD}4. Common services sweep (multi){RST}
-   {C}use multi{RST}
-   {C}add scripts/ftp{RST}
-   {C}add scripts/ssh{RST}
-   {C}add scripts/http{RST}
-   {C}add scripts/smb{RST}
-   {C}add scripts/ssl{RST}
-   {C}set target 10.10.10.5{RST}
-   {C}set timing -T4{RST}
-   {C}run{RST}
-
-{BLD}5. Full aggressive single scan{RST}
-   {C}use enum/aggressive{RST}
-   {C}set target 192.168.1.1{RST}
-   {C}set extra --open{RST}
-   {C}run{RST}
+{PBLD}4. All common services (multi){PRST}
+   {PC}use multi{PRST}
+   {PC}add scripts/ftp{PRST}
+   {PC}add scripts/ssh{PRST}
+   {PC}add scripts/http{PRST}
+   {PC}add scripts/smb{PRST}
+   {PC}add scripts/ssl{PRST}
+   {PC}set target 10.10.10.5{PRST}
+   {PC}set timing -T4{PRST}
+   {PC}run{PRST}
 """
 
 HELP_TOPICS = {
@@ -287,9 +262,9 @@ HELP_TOPICS = {
     "output":   HELP_OUTPUT,
 }
 
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 #  SHELL
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 class NmapShell:
     def __init__(self):
@@ -303,44 +278,43 @@ class NmapShell:
             "extra":   "",
             "outfile": "",
         }
+        # last search results — enables 'use 0', 'use 1', 'add 0' etc.
+        self.last_results: list[ScanModule] = []
         self._setup_readline()
 
-    # ── readline / tab completion ────────────────────────────────
+    # ── readline tab completion ──────────────────────────────────
     def _setup_readline(self):
-        base_commands  = [
-            "search ", "use ", "show ", "set ", "unset ", "run",
-            "info", "back", "results", "clear", "help", "exit", "quit",
-        ]
-        multi_commands = ["add ", "remove ", "list", "clear_queue"]
-        all_commands   = base_commands + multi_commands
-
-        show_opts    = ["modules", "categories", "options"]
-        set_opts     = ["target ", "ports ", "timing ", "extra ", "outfile "]
-        help_opts    = list(HELP_TOPICS.keys())
-        module_names = list(MODULES.keys())
+        base_cmds  = ["search ", "use ", "show ", "set ", "unset ",
+                      "run", "info", "back", "results", "clear",
+                      "help ", "exit", "quit"]
+        multi_cmds = ["add ", "remove ", "list", "clear_queue"]
+        show_opts  = ["modules", "categories", "options"]
+        set_opts   = ["target ", "ports ", "timing ", "extra ", "outfile "]
+        help_opts  = list(HELP_TOPICS.keys())
+        mod_names  = list(MODULES.keys())
 
         def completer(text, state):
-            options_list: list[str] = []
             buf   = readline.get_line_buffer().lstrip()
             parts = buf.split()
             first = parts[0].lower() if parts else ""
+            opts: list[str] = []
 
             if len(parts) == 0 or (len(parts) == 1 and not buf.endswith(" ")):
-                cmds = all_commands if self.multi_mode else base_commands
-                options_list = [c for c in cmds if c.startswith(text)]
+                cmds = base_cmds + multi_cmds if self.multi_mode else base_cmds
+                opts = [c for c in cmds if c.startswith(text)]
             elif first in ("use", "add", "remove"):
-                options_list = [m for m in module_names if m.startswith(text)]
+                opts = [m for m in mod_names if m.startswith(text)]
                 if first == "use" and "multi".startswith(text):
-                    options_list = ["multi"] + options_list
+                    opts = ["multi"] + opts
             elif first == "show":
-                options_list = [o for o in show_opts if o.startswith(text)]
+                opts = [o for o in show_opts if o.startswith(text)]
             elif first in ("help", "?"):
-                options_list = [o for o in help_opts if o.startswith(text)]
+                opts = [o for o in help_opts if o.startswith(text)]
             elif first == "set":
-                options_list = [o for o in set_opts if o.startswith(text)]
+                opts = [o for o in set_opts if o.startswith(text)]
 
             try:
-                return options_list[state]
+                return opts[state]
             except IndexError:
                 return None
 
@@ -348,16 +322,15 @@ class NmapShell:
         readline.parse_and_bind("tab: complete")
         readline.set_completer_delims(" \t")
 
-    # ── prompt ───────────────────────────────────────────────────
+    # ── prompt  (uses _rl-wrapped codes for correct width) ───────
     def _prompt(self) -> str:
         if self.multi_mode:
-            count = len(self.queue)
-            ctx = f"{M}(multi:{count}){RST}"
+            ctx = f"{_M}(multi:{len(self.queue)}){_X}"
         elif self.module:
-            ctx = f"{Y}({self.module.name}){RST}"
+            ctx = f"{_Y}({self.module.name}){_X}"
         else:
             ctx = ""
-        return f"{R}{BLD}nmapsh{RST}{ctx}{W} > {RST}"
+        return f"{_R}{_B}nmapsh{_X}{ctx}{_W} > {_X}"
 
     # ── main loop ────────────────────────────────────────────────
     def run(self):
@@ -366,9 +339,8 @@ class NmapShell:
             try:
                 raw = input(self._prompt()).strip()
             except (KeyboardInterrupt, EOFError):
-                print(f"\n{Y}[*] Use 'exit' to quit.{RST}")
+                print(f"\n{PY}[*] Use 'exit' to quit.{PRST}")
                 continue
-
             if not raw:
                 continue
 
@@ -376,7 +348,6 @@ class NmapShell:
             cmd   = parts[0].lower()
             args  = parts[1:] if len(parts) > 1 else []
 
-            # multi-mode-only commands
             if self.multi_mode and cmd in ("add", "remove", "list", "clear_queue"):
                 getattr(self, f"cmd_{cmd}")(args)
                 continue
@@ -397,88 +368,116 @@ class NmapShell:
                 "exit":       self._exit,
                 "quit":       self._exit,
             }
-
             handler = dispatch.get(cmd)
             if handler:
                 handler(args)
             elif cmd in ("add", "remove", "list", "clear_queue"):
-                print(f"{Y}[*] '{cmd}' only works in multi mode.  Use: use multi{RST}")
+                print(f"{PY}[*] '{cmd}' only works in multi mode.  Use: use multi{PRST}")
             else:
-                print(f"{R}[!] Unknown command: {cmd}  (type 'help'){RST}")
+                print(f"{PR}[!] Unknown command: {cmd}  (type 'help'){PRST}")
 
-    # ═══════════════════════════════════════════════════════════
-    #  STANDARD COMMANDS
-    # ═══════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
+    #  HELPERS
+    # ════════════════════════════════════════════════════════════
+
+    def _resolve_module(self, token: str) -> Optional[ScanModule]:
+        """
+        Resolve a module from either:
+          - a number  -> index into last_results  (0-based)
+          - a name    -> direct MODULES lookup
+        Returns None and prints an error if not found.
+        """
+        if token.isdigit():
+            idx = int(token)
+            if not self.last_results:
+                print(f"{PR}[!] No search results to index.  Run 'search <keyword>' first.{PRST}")
+                return None
+            if idx >= len(self.last_results):
+                print(f"{PR}[!] Index {idx} out of range.  "
+                      f"Last search had {len(self.last_results)} result(s) (0-{len(self.last_results)-1}).{PRST}")
+                return None
+            return self.last_results[idx]
+
+        mod = get_module(token)
+        if not mod:
+            close = search_modules(token)
+            if close:
+                print(f"{PY}[-] Module not found. Did you mean:{PRST}")
+                for m in close[:5]:
+                    print(f"    {PG}{m.name}{PRST}")
+            else:
+                print(f"{PR}[!] Module '{token}' not found.  Try: search <keyword>{PRST}")
+        return mod
+
+    # ════════════════════════════════════════════════════════════
+    #  COMMANDS
+    # ════════════════════════════════════════════════════════════
 
     def cmd_help(self, args: list[str]):
         if not args:
-            print(HELP_MAIN)
-            return
+            print(HELP_MAIN); return
         topic = args[0].lower()
         if topic == "modules":
             self._show_all_modules()
         elif topic in HELP_TOPICS:
             print(HELP_TOPICS[topic])
         else:
-            print(f"{Y}[*] Unknown help topic: '{topic}'{RST}")
+            print(f"{PY}[*] Unknown topic: '{topic}'{PRST}")
             print(f"    Available: {', '.join(sorted(HELP_TOPICS.keys()))}")
 
     def cmd_search(self, args: list[str]):
         if not args:
-            print(f"{Y}Usage: search <keyword>  |  help search  for keyword ideas{RST}")
+            print(f"{PY}Usage: search <keyword>  |  help search  for ideas{PRST}")
             return
         kw      = " ".join(args)
-        results = search_modules(kw)
+        results = sorted(search_modules(kw), key=lambda x: x.name)
         if not results:
-            print(f"{Y}[-] No modules found for: '{kw}'{RST}")
-            print(f"    Try: {C}help search{RST} for keyword ideas")
+            print(f"{PY}[-] No modules found for '{kw}'.  Try: help search{PRST}")
+            self.last_results = []
             return
-        print(f"\n{BLD}  {'Module':<35} {'Category':<14} Description{RST}")
-        print("  " + "─" * 78)
-        for m in sorted(results, key=lambda x: x.name):
-            root_flag = f" {R}[root]{RST}" if m.requires_root else ""
-            print(f"  {G}{m.name:<35}{RST}{C}{m.category:<14}{RST}{m.description}{root_flag}")
-        if self.multi_mode:
-            print(f"\n  {DIM}Tip: type 'add <module>' to queue it{RST}")
-        print()
+
+        # store so 'use 0', 'add 0', etc. work immediately
+        self.last_results = results
+
+        print(f"\n{PBLD}  {'#':<4} {'Module':<35} {'Category':<14} Description{PRST}")
+        print("  " + "-" * 80)
+        for i, m in enumerate(results):
+            root = f"  {PR}[root]{PRST}" if m.requires_root else ""
+            print(f"  {PC}{i:<4}{PRST}{PG}{m.name:<35}{PRST}{PDIM}{m.category:<14}{PRST}"
+                  f"{m.description}{root}")
+
+        hint = "use" if not self.multi_mode else "add"
+        print(f"\n  {PDIM}Load with: {hint} 0  /  {hint} 1  /  {hint} 2 ...{PRST}\n")
 
     def cmd_use(self, args: list[str]):
         if not args:
-            print(f"{Y}Usage: use <module_name>  |  use multi{RST}")
+            print(f"{PY}Usage: use <number> | use <module/name> | use multi{PRST}")
             return
-        name = args[0]
+        token = args[0]
 
-        if name.lower() == "multi":
+        if token.lower() == "multi":
             self.multi_mode = True
             self.module     = None
             self.queue      = []
-            print(f"\n{M}[+] Multi-module mode activated{RST}")
-            print(f"    {C}add <module>{RST}        add a module to the queue")
-            print(f"    {C}list{RST}                view the queue")
-            print(f"    {C}set target <ip>{RST}     set the target")
-            print(f"    {C}run{RST}                 execute all queued modules")
-            print(f"    {C}help multi{RST}          full guide + combinations\n")
+            print(f"\n{PM}[+] Multi-module mode{PRST}")
+            print(f"    {PC}add <module or number>{PRST}   add to queue")
+            print(f"    {PC}list{PRST}                     view queue")
+            print(f"    {PC}set target <ip>{PRST}          set target")
+            print(f"    {PC}run{PRST}                      execute all\n")
             return
 
-        mod = get_module(name)
+        mod = self._resolve_module(token)
         if not mod:
-            close = search_modules(name)
-            if close:
-                print(f"{Y}[-] Module not found. Did you mean:{RST}")
-                for m in close[:5]:
-                    print(f"    {G}{m.name}{RST}")
-            else:
-                print(f"{R}[!] Module '{name}' not found.  Try: search <keyword>{RST}")
             return
 
         self.multi_mode = False
         self.queue      = []
         self.module     = mod
-        print(f"\n{G}[+] Loaded: {BLD}{mod.name}{RST}")
+        print(f"\n{PG}[+] Loaded: {PBLD}{mod.name}{PRST}")
         print(f"    {mod.description}")
         if mod.requires_root:
-            print(f"    {R}[!] Requires root/sudo{RST}")
-        print(f"\n    {C}set target <ip/cidr>{RST}  then  {C}run{RST}\n")
+            print(f"    {PR}[!] Requires root/sudo{PRST}")
+        print(f"\n    {PC}set target <ip/cidr>{PRST}  then  {PC}run{PRST}\n")
 
     def cmd_show(self, args: list[str]):
         sub = args[0].lower() if args else ""
@@ -489,91 +488,82 @@ class NmapShell:
         elif sub == "options":
             self._show_options()
         else:
-            print(f"{Y}Usage: show [modules | categories | options]{RST}")
+            print(f"{PY}Usage: show [modules | categories | options]{PRST}")
 
     def _show_all_modules(self):
         for cat in list_categories():
-            print(f"\n{BLD}{C}  [{cat.upper()}]{RST}")
-            print("  " + "─" * 70)
-            mods = [m for m in MODULES.values() if m.category == cat]
-            for m in sorted(mods, key=lambda x: x.name):
-                root = f" {R}*root*{RST}" if m.requires_root else ""
-                print(f"  {G}{m.name:<36}{RST}{m.description}{root}")
-        print(f"\n  {DIM}*root* = requires sudo{RST}\n")
+            print(f"\n{PBLD}{PC}  [{cat.upper()}]{PRST}")
+            print("  " + "-" * 70)
+            for m in sorted((m for m in MODULES.values() if m.category == cat),
+                            key=lambda x: x.name):
+                root = f"  {PR}*root*{PRST}" if m.requires_root else ""
+                print(f"  {PG}{m.name:<36}{PRST}{m.description}{root}")
+        print(f"\n  {PDIM}*root* = requires sudo{PRST}\n")
 
     def _show_categories(self):
-        print(f"\n{BLD}  Categories:{RST}")
+        print(f"\n{PBLD}  Categories:{PRST}")
         for cat in list_categories():
             count = sum(1 for m in MODULES.values() if m.category == cat)
-            print(f"    {C}{cat:<18}{RST} {count} module(s)")
+            print(f"    {PC}{cat:<18}{PRST} {count} module(s)")
         print()
 
     def _show_options(self):
         if self.multi_mode:
-            print(f"\n{BLD}  Mode :{RST} {M}multi-module{RST}")
+            print(f"\n{PBLD}  Mode :{PRST} {PM}multi-module{PRST}")
             if self.queue:
-                print(f"{BLD}  Queue:{RST}")
+                print(f"{PBLD}  Queue:{PRST}")
                 for i, m in enumerate(self.queue, 1):
-                    root = f" {R}[root]{RST}" if m.requires_root else ""
-                    print(f"    {DIM}{i}.{RST} {G}{m.name}{RST}{root}")
+                    root = f"  {PR}[root]{PRST}" if m.requires_root else ""
+                    print(f"    {PDIM}{i}.{PRST} {PG}{m.name}{PRST}{root}")
             else:
-                print(f"{BLD}  Queue:{RST} {DIM}(empty){RST}")
+                print(f"{PBLD}  Queue:{PRST} {PDIM}(empty){PRST}")
         else:
             if not self.module:
-                print(f"{Y}[*] No module loaded.{RST}")
-                return
-            print(f"\n{BLD}  Module:{RST} {G}{self.module.name}{RST}")
-            print(f"{BLD}  Desc  :{RST} {self.module.description}")
-            print(f"{BLD}  Args  :{RST} {C}nmap {self.module.nmap_args}{RST}")
+                print(f"{PY}[*] No module loaded.{PRST}"); return
+            print(f"\n{PBLD}  Module:{PRST} {PG}{self.module.name}{PRST}")
+            print(f"{PBLD}  Desc  :{PRST} {self.module.description}")
+            print(f"{PBLD}  Args  :{PRST} {PC}nmap {self.module.nmap_args}{PRST}")
             if self.module.requires_root:
-                print(f"  {R}[!] Requires root{RST}")
+                print(f"  {PR}[!] Requires root{PRST}")
 
-        req_map = {"target": True, "ports": False, "timing": False,
-                   "extra": False, "outfile": False}
-        print(f"\n{BLD}  {'Option':<12} {'Value':<35} Required{RST}")
-        print("  " + "─" * 55)
+        req = {"target": True, "ports": False, "timing": False,
+               "extra": False, "outfile": False}
+        print(f"\n{PBLD}  {'Option':<12} {'Value':<35} Required{PRST}")
+        print("  " + "-" * 55)
         for opt, val in self.options.items():
-            req  = f"{R}yes{RST}" if req_map.get(opt) else f"{DIM}no{RST}"
-            disp = f"{G}{val}{RST}" if val else f"{DIM}(not set){RST}"
-            print(f"  {Y}{opt:<12}{RST} {disp:<44} {req}")
+            r    = f"{PR}yes{PRST}" if req.get(opt) else f"{PDIM}no{PRST}"
+            disp = f"{PG}{val}{PRST}" if val else f"{PDIM}(not set){PRST}"
+            print(f"  {PY}{opt:<12}{PRST} {disp:<44} {r}")
         print()
 
     def cmd_set(self, args: list[str]):
         if len(args) < 2:
-            print(f"{Y}Usage: set <option> <value>  |  help set{RST}")
-            return
+            print(f"{PY}Usage: set <option> <value>  |  help set{PRST}"); return
         opt = args[0].lower()
         val = " ".join(args[1:])
         if opt not in self.options:
-            print(f"{R}[!] Unknown option '{opt}'. Options: {', '.join(self.options.keys())}{RST}")
-            return
+            print(f"{PR}[!] Unknown option '{opt}'. "
+                  f"Options: {', '.join(self.options.keys())}{PRST}"); return
         self.options[opt] = val
-        print(f"  {G}{opt}{RST} => {C}{val}{RST}")
+        print(f"  {PG}{opt}{PRST} => {PC}{val}{PRST}")
 
     def cmd_unset(self, args: list[str]):
         if not args:
-            print(f"{Y}Usage: unset <option>{RST}")
-            return
+            print(f"{PY}Usage: unset <option>{PRST}"); return
         opt = args[0].lower()
         if opt not in self.options:
-            print(f"{R}[!] Unknown option '{opt}'{RST}")
-            return
+            print(f"{PR}[!] Unknown option '{opt}'{PRST}"); return
         self.options[opt] = ""
-        print(f"  {Y}{opt}{RST} cleared.")
+        print(f"  {PY}{opt}{PRST} cleared.")
 
     def cmd_run(self, _args):
         if not self.options["target"]:
-            print(f"{R}[!] Target not set.  Use: set target <ip/cidr>{RST}")
-            return
-        if self.multi_mode:
-            self._run_multi()
-        else:
-            self._run_single()
+            print(f"{PR}[!] Target not set.  Use: set target <ip/cidr>{PRST}"); return
+        self._run_multi() if self.multi_mode else self._run_single()
 
     def _run_single(self):
         if not self.module:
-            print(f"{R}[!] No module loaded.  Use: use <module>{RST}")
-            return
+            print(f"{PR}[!] No module loaded.  Use: use <module>{PRST}"); return
         cfg = ScanConfig(
             target      = self.options["target"],
             module      = self.module,
@@ -582,177 +572,147 @@ class NmapShell:
             timing      = self.options["timing"],
             ports       = self.options["ports"],
         )
-        print(f"\n{G}[*] Module : {BLD}{self.module.name}{RST}")
-        print(f"{G}[*] Target : {BLD}{cfg.target}{RST}")
-        rc = run_scan(cfg)
-        self._print_rc(rc)
+        print(f"\n{PG}[*] Module : {PBLD}{self.module.name}{PRST}")
+        print(f"{PG}[*] Target : {PBLD}{cfg.target}{PRST}")
+        self._print_rc(run_scan(cfg))
 
     def _run_multi(self):
         if not self.queue:
-            print(f"{R}[!] Queue is empty.  Use: add <module_name>{RST}")
-            return
-
+            print(f"{PR}[!] Queue is empty.  Use: add <module>{PRST}"); return
         total = len(self.queue)
-        print(f"\n{M}{BLD}[*] Multi-scan — {total} module(s) | target: {self.options['target']}{RST}")
-        print("─" * 60)
-
-        passed = 0
-        failed = 0
-
+        print(f"\n{PM}{PBLD}[*] Multi-scan — {total} module(s) | "
+              f"target: {self.options['target']}{PRST}")
+        print("-" * 60)
+        passed = failed = 0
         for idx, mod in enumerate(self.queue, 1):
-            print(f"\n{C}{BLD}[{idx}/{total}] {mod.name}{RST}")
+            print(f"\n{PC}{PBLD}[{idx}/{total}] {mod.name}{PRST}")
             if mod.requires_root:
-                print(f"  {R}[!] This module needs root/sudo{RST}")
-
+                print(f"  {PR}[!] Needs root/sudo{PRST}")
             base = self.options["outfile"]
-            per_mod_base = f"{base}_{mod.name.replace('/', '_')}" if base else None
-
             cfg = ScanConfig(
                 target      = self.options["target"],
                 module      = mod,
-                output_base = per_mod_base,
+                output_base = f"{base}_{mod.name.replace('/', '_')}" if base else None,
                 extra_args  = self.options["extra"],
                 timing      = self.options["timing"],
                 ports       = self.options["ports"],
             )
             rc = run_scan(cfg)
-
             if rc == 0:
-                print(f"{G}  [+] Done: {mod.name}{RST}")
-                passed += 1
+                print(f"{PG}  [+] Done: {mod.name}{PRST}"); passed += 1
             elif rc == 130:
-                print(f"{Y}  [!] Interrupted — stopping multi-scan.{RST}")
-                break
+                print(f"{PY}  [!] Interrupted — stopping.{PRST}"); break
             else:
-                print(f"{R}  [x] Failed (exit {rc}): {mod.name}{RST}")
-                failed += 1
+                print(f"{PR}  [x] Failed (exit {rc}): {mod.name}{PRST}"); failed += 1
 
-        print(f"\n{'─'*60}")
-        print(f"{M}{BLD}[*] Multi-scan finished{RST}")
-        print(f"    {G}Completed : {passed}{RST}")
+        print(f"\n{'-'*60}")
+        print(f"{PM}{PBLD}[*] Multi-scan complete{PRST}")
+        print(f"    {PG}Done   : {passed}{PRST}")
         if failed:
-            print(f"    {R}Failed    : {failed}{RST}")
-        print(f"    Files     : {Y}{OUTPUT_DIR}/{RST}")
-        print(f"    View      : {C}results{RST}\n")
+            print(f"    {PR}Failed : {failed}{PRST}")
+        print(f"    Files  : {PY}{OUTPUT_DIR}/{PRST}")
+        print(f"    View   : {PC}results{PRST}\n")
 
     def _print_rc(self, rc: int):
         if rc == 0:
-            print(f"\n{G}[+] Done. Files saved in: {OUTPUT_DIR}/{RST}\n")
+            print(f"\n{PG}[+] Done. Files saved in: {OUTPUT_DIR}/{PRST}\n")
         elif rc == 130:
-            print(f"{Y}[*] Scan interrupted.{RST}\n")
+            print(f"{PY}[*] Interrupted.{PRST}\n")
         else:
-            print(f"{R}[!] Nmap exited with code {rc}{RST}\n")
+            print(f"{PR}[!] Nmap exited with code {rc}{PRST}\n")
 
     def cmd_info(self, _args):
         if self.multi_mode:
             self.cmd_list([]); return
         if not self.module:
-            print(f"{Y}[*] No module loaded.{RST}"); return
+            print(f"{PY}[*] No module loaded.{PRST}"); return
         m = self.module
         print(f"""
-{BLD}{C}Module Information{RST}
-  {BLD}Name     :{RST} {G}{m.name}{RST}
-  {BLD}Category :{RST} {C}{m.category}{RST}
-  {BLD}Requires :{RST} {'root/sudo' if m.requires_root else 'no special privileges'}
+{PBLD}{PC}Module Information{PRST}
+  {PBLD}Name     :{PRST} {PG}{m.name}{PRST}
+  {PBLD}Category :{PRST} {PC}{m.category}{PRST}
+  {PBLD}Requires :{PRST} {'root/sudo' if m.requires_root else 'no special privileges'}
 
-{BLD}Description:{RST}
+{PBLD}Description:{PRST}
   {m.description}
 
-{BLD}Nmap Arguments:{RST}
-  {C}nmap {m.nmap_args} <target>{RST}
+{PBLD}Nmap Arguments:{PRST}
+  {PC}nmap {m.nmap_args} <target>{PRST}
 
-{BLD}Example:{RST}
-  {DIM}{m.example}{RST}
+{PBLD}Example:{PRST}
+  {PDIM}{m.example}{PRST}
 """)
 
     def cmd_back(self, _args):
         if self.multi_mode:
-            print(f"{Y}[*] Leaving multi mode. Queue cleared.{RST}")
-            self.multi_mode = False
-            self.queue      = []
+            print(f"{PY}[*] Leaving multi mode. Queue cleared.{PRST}")
+            self.multi_mode = False; self.queue = []
         elif self.module:
-            print(f"{Y}[*] Unloaded: {self.module.name}{RST}")
+            print(f"{PY}[*] Unloaded: {self.module.name}{PRST}")
             self.module = None
         else:
-            print(f"{DIM}[*] Nothing to unload.{RST}")
+            print(f"{PDIM}[*] Nothing to unload.{PRST}")
 
     def cmd_results(self, _args):
         files = sorted(OUTPUT_DIR.iterdir()) if OUTPUT_DIR.exists() else []
         if not files:
-            print(f"{Y}[*] No results yet. Run a scan first.{RST}")
-            return
-        print(f"\n{BLD}  Saved files  ({OUTPUT_DIR}/){RST}")
-        print("  " + "─" * 58)
+            print(f"{PY}[*] No results yet. Run a scan first.{PRST}"); return
+        print(f"\n{PBLD}  Saved files  ({OUTPUT_DIR}/){PRST}")
+        print("  " + "-" * 58)
         for f in files:
-            size      = f"{f.stat().st_size / 1024:.1f} KB"
-            ext_color = {".xml": G, ".nmap": C, ".gnmap": Y}.get(f.suffix, W)
-            print(f"  {ext_color}{f.name:<48}{RST} {DIM}{size}{RST}")
+            size = f"{f.stat().st_size / 1024:.1f} KB"
+            col  = {".xml": PG, ".nmap": PC, ".gnmap": PY}.get(f.suffix, "")
+            print(f"  {col}{f.name:<48}{PRST} {PDIM}{size}{PRST}")
         print()
 
     def _exit(self, _args=None):
-        print(f"\n{Y}[*] Exiting NmapShell. Stay legal. 👋{RST}\n")
+        print(f"\n{PY}[*] Exiting NmapShell. Stay legal.{PRST}\n")
         sys.exit(0)
 
-    # ═══════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     #  MULTI-MODE COMMANDS
-    # ═══════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
 
     def cmd_add(self, args: list[str]):
         if not args:
-            print(f"{Y}Usage: add <module_name>  |  search <keyword> to find modules{RST}")
-            return
-        mod = get_module(args[0])
+            print(f"{PY}Usage: add <number or module_name>{PRST}"); return
+        mod = self._resolve_module(args[0])
         if not mod:
-            close = search_modules(args[0])
-            if close:
-                print(f"{Y}[-] Not found. Did you mean:{RST}")
-                for m in close[:5]:
-                    print(f"    {G}{m.name}{RST}")
-            else:
-                print(f"{R}[!] Module '{args[0]}' not found.  Try: search <keyword>{RST}")
             return
-
         if any(m.name == mod.name for m in self.queue):
-            print(f"{Y}[*] '{mod.name}' is already in the queue.{RST}")
-            return
-
+            print(f"{PY}[*] '{mod.name}' is already queued.{PRST}"); return
         self.queue.append(mod)
-        root = f"  {R}[needs root]{RST}" if mod.requires_root else ""
-        print(f"  {G}[+]{RST} {G}{mod.name}{RST}{root}  "
-              f"{DIM}({len(self.queue)} in queue){RST}")
+        root = f"  {PR}[needs root]{PRST}" if mod.requires_root else ""
+        print(f"  {PG}[+]{PRST} {PG}{mod.name}{PRST}{root}  "
+              f"{PDIM}({len(self.queue)} in queue){PRST}")
 
     def cmd_remove(self, args: list[str]):
         if not args:
-            print(f"{Y}Usage: remove <module_name>{RST}")
-            return
+            print(f"{PY}Usage: remove <module_name>{PRST}"); return
         before     = len(self.queue)
         self.queue = [m for m in self.queue if m.name != args[0]]
         if len(self.queue) < before:
-            print(f"  {Y}[-] Removed: {args[0]}{RST}  {DIM}({len(self.queue)} remaining){RST}")
+            print(f"  {PY}[-] Removed: {args[0]}{PRST}  "
+                  f"{PDIM}({len(self.queue)} remaining){PRST}")
         else:
-            print(f"{R}[!] '{args[0]}' not in queue.{RST}")
+            print(f"{PR}[!] '{args[0]}' not in queue.{PRST}")
 
     def cmd_list(self, _args):
         if not self.queue:
-            print(f"\n{Y}  Queue is empty.  Use: add <module_name>{RST}\n")
-            return
-        print(f"\n{BLD}{M}  Queued modules ({len(self.queue)} total):{RST}")
-        print("  " + "─" * 58)
+            print(f"\n{PY}  Queue is empty.  Use: add <module>{PRST}\n"); return
+        print(f"\n{PBLD}{PM}  Queued ({len(self.queue)} modules):{PRST}")
+        print("  " + "-" * 58)
         for i, m in enumerate(self.queue, 1):
-            root = f"  {R}[root]{RST}" if m.requires_root else ""
-            desc = m.description[:35] + "..." if len(m.description) > 35 else m.description
-            print(f"  {DIM}{i:>2}.{RST} {G}{m.name:<35}{RST} {DIM}{desc}{RST}{root}")
-        print()
+            root = f"  {PR}[root]{PRST}" if m.requires_root else ""
+            desc = m.description[:38] + "..." if len(m.description) > 38 else m.description
+            print(f"  {PDIM}{i:>2}.{PRST} {PG}{m.name:<35}{PRST} {PDIM}{desc}{PRST}{root}")
         tgt = self.options["target"]
-        if tgt:
-            print(f"  {BLD}Target:{RST} {C}{tgt}{RST}")
-        else:
-            print(f"  {BLD}Target:{RST} {R}(not set -- use: set target <ip>){RST}")
+        print(f"\n  {PBLD}Target:{PRST} "
+              + (f"{PC}{tgt}{PRST}" if tgt else f"{PR}(not set){PRST}"))
         print()
 
     def cmd_clear_queue(self, _args):
         if not self.queue:
-            print(f"{DIM}[*] Queue already empty.{RST}"); return
-        count      = len(self.queue)
-        self.queue = []
-        print(f"{Y}[*] Queue cleared ({count} module(s) removed).{RST}")
+            print(f"{PDIM}[*] Queue already empty.{PRST}"); return
+        n = len(self.queue); self.queue = []
+        print(f"{PY}[*] Cleared {n} module(s) from queue.{PRST}")
